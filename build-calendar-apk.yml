@@ -12,9 +12,17 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: read
+    env:
+      KALENDARZ_KEYSTORE_BASE64: ${{ secrets.KALENDARZ_UPLOAD_KEYSTORE_BASE64 }}
+      KALENDARZ_UPLOAD_STORE_PASSWORD: ${{ secrets.KALENDARZ_UPLOAD_STORE_PASSWORD }}
+      KALENDARZ_UPLOAD_KEY_ALIAS: ${{ secrets.KALENDARZ_UPLOAD_KEY_ALIAS }}
+      KALENDARZ_UPLOAD_KEY_PASSWORD: ${{ secrets.KALENDARZ_UPLOAD_KEY_PASSWORD }}
     steps:
       - name: Pobierz projekt
         uses: actions/checkout@v4
+      - name: Ustal numer wydania
+        shell: bash
+        run: echo "VERSION_CODE=$((GITHUB_RUN_NUMBER * 100 + GITHUB_RUN_ATTEMPT))" >> "$GITHUB_ENV"
       - name: Rozpakuj źródła aplikacji
         run: |
           test -f kalendarz-rodzinny-android.zip
@@ -23,6 +31,17 @@ jobs:
           test -f project/app/build.gradle
           test -f project/app/src/main/assets/cloud.js
           test -f project/app/src/main/assets/index.html
+      - name: Przygotuj stały podpis aktualizacji
+        shell: bash
+        run: |
+          if [ -n "$KALENDARZ_KEYSTORE_BASE64" ]; then
+            echo "$KALENDARZ_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/kalendarz-upload.jks"
+            echo "KALENDARZ_UPLOAD_KEYSTORE=$RUNNER_TEMP/kalendarz-upload.jks" >> "$GITHUB_ENV"
+            echo "APK będzie podpisany stałym kluczem — można instalować aktualizacje na istniejącej aplikacji."
+          else
+            echo "Brak klucza w GitHub Secrets: zostanie zbudowany APK testowy debug. Podpis debug może nie być stały między uruchomieniami."
+            echo "Aby instalować kolejne APK jako aktualizacje, ustaw sekrety KALENDARZ_UPLOAD_KEYSTORE_BASE64, KALENDARZ_UPLOAD_STORE_PASSWORD, KALENDARZ_UPLOAD_KEY_ALIAS i KALENDARZ_UPLOAD_KEY_PASSWORD." >> "$GITHUB_STEP_SUMMARY"
+          fi
       - name: Java 17
         uses: actions/setup-java@v4
         with:
@@ -39,9 +58,21 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.11.1'
+      - name: Zbuduj APK aktualizacyjne
+        if: ${{ env.KALENDARZ_KEYSTORE_BASE64 != '' }}
+        run: gradle --no-daemon --project-dir project :app:assembleRelease
       - name: Zbuduj APK testowe
+        if: ${{ env.KALENDARZ_KEYSTORE_BASE64 == '' }}
         run: gradle --no-daemon --project-dir project :app:assembleDebug
-      - name: Udostępnij APK do pobrania
+      - name: Udostępnij APK aktualizacyjne
+        if: ${{ env.KALENDARZ_KEYSTORE_BASE64 != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kalendarz-Rodzinny-APK
+          path: project/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
+      - name: Udostępnij APK testowe
+        if: ${{ env.KALENDARZ_KEYSTORE_BASE64 == '' }}
         uses: actions/upload-artifact@v4
         with:
           name: Kalendarz-Rodzinny-APK
