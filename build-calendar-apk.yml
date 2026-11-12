@@ -1,0 +1,49 @@
+name: Kalendarz Rodzinny — zbuduj APK
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'kalendarz-rodzinny-android.zip'
+      - '.github/workflows/build-calendar-apk.yml'
+
+jobs:
+  android-apk:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Pobierz projekt
+        uses: actions/checkout@v4
+      - name: Rozpakuj źródła aplikacji
+        run: |
+          test -f kalendarz-rodzinny-android.zip
+          mkdir -p project
+          unzip -q kalendarz-rodzinny-android.zip -d project
+          test -f project/app/build.gradle
+          test -f project/app/src/main/assets/cloud.js
+          test -f project/app/src/main/assets/index.html
+      - name: Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Android SDK 35
+        shell: bash
+        run: |
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          test -x "$SDKMANAGER"
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+          "$SDKMANAGER" --install 'platform-tools' 'platforms;android-35' 'build-tools;35.0.0'
+      - name: Gradle 8.11.1
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+      - name: Zbuduj APK testowe
+        run: gradle --no-daemon --project-dir project :app:assembleDebug
+      - name: Udostępnij APK do pobrania
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kalendarz-Rodzinny-APK
+          path: project/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
