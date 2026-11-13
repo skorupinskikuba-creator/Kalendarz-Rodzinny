@@ -1,36 +1,78 @@
-# This is a basic workflow to help you get started with Actions
+name: Kalendarz Rodzinny — APK aktualizacyjne
 
-name: CI
-
-# Controls when the workflow will run
 on:
-  # Triggers the workflow on push or pull request events but only for the "main" branch
-  push:
-    branches: [ "main" ]
-  pull_request:
-    branches: [ "main" ]
-
-  # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
+  push:
+    paths:
+      - 'kalendarz-rodzinny-android.zip'
+      - '.github/workflows/build-calendar-apk.yml'
 
-# A workflow run is made up of one or more jobs that can run sequentially or in parallel
 jobs:
-  # This workflow contains a single job called "build"
-  build:
-    # The type of runner that the job will run on
-    runs-on: ubuntu-latest
-
-    # Steps represent a sequence of tasks that will be executed as part of the job
+  android-apk:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    env:
+      KALENDARZ_KEYSTORE_BASE64: ${{ secrets.KALENDARZ_UPLOAD_KEYSTORE_BASE64 }}
+      KALENDARZ_UPLOAD_STORE_PASSWORD: ${{ secrets.KALENDARZ_UPLOAD_STORE_PASSWORD }}
+      KALENDARZ_UPLOAD_KEY_ALIAS: ${{ secrets.KALENDARZ_UPLOAD_KEY_ALIAS }}
+      KALENDARZ_UPLOAD_KEY_PASSWORD: ${{ secrets.KALENDARZ_UPLOAD_KEY_PASSWORD }}
     steps:
-      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
-      - uses: actions/checkout@v4
-
-      # Runs a single command using the runners shell
-      - name: Run a one-line script
-        run: echo Hello, world!
-
-      # Runs a set of commands using the runners shell
-      - name: Run a multi-line script
+      - name: Pobierz projekt
+        uses: actions/checkout@v4
+      - name: Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Sprawdź klucz podpisujący
+        shell: bash
         run: |
-          echo Add other actions to build,
-          echo test, and deploy your project.
+          set -euo pipefail
+          missing=0
+          for name in KALENDARZ_KEYSTORE_BASE64 KALENDARZ_UPLOAD_STORE_PASSWORD KALENDARZ_UPLOAD_KEY_ALIAS KALENDARZ_UPLOAD_KEY_PASSWORD; do
+            if [ -z "${!name}" ]; then echo "::error::Brak sekretu GitHub: $name"; missing=1; fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            echo "Wymagane są cztery sekrety podpisu Kalendarza Rodzinnego." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "$KALENDARZ_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/kalendarz-upload.jks"
+          keytool -list -keystore "$RUNNER_TEMP/kalendarz-upload.jks" -storepass "$KALENDARZ_UPLOAD_STORE_PASSWORD" -alias "$KALENDARZ_UPLOAD_KEY_ALIAS" >/dev/null
+          echo "KALENDARZ_UPLOAD_KEYSTORE=$RUNNER_TEMP/kalendarz-upload.jks" >> "$GITHUB_ENV"
+          echo "KALENDARZ_KEY_OK=true" >> "$GITHUB_ENV"
+          echo "Klucz i alias są poprawne; buduję APK aktualizacyjne." >> "$GITHUB_STEP_SUMMARY"
+      - name: Ustal numer wydania
+        shell: bash
+        run: echo "VERSION_CODE=$((GITHUB_RUN_NUMBER * 100 + GITHUB_RUN_ATTEMPT))" >> "$GITHUB_ENV"
+      - name: Rozpakuj źródła aplikacji
+        run: |
+          set -euo pipefail
+          test -f kalendarz-rodzinny-android.zip
+          mkdir -p project
+          unzip -q kalendarz-rodzinny-android.zip -d project
+          test -f project/app/build.gradle
+          test -f project/app/src/main/assets/cloud.js
+          test -f project/app/src/main/assets/index.html
+      - name: Android SDK 35
+        shell: bash
+        run: |
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          test -x "$SDKMANAGER"
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+          "$SDKMANAGER" --install 'platform-tools' 'platforms;android-35' 'build-tools;35.0.0'
+      - name: Gradle 8.11.1
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+      - name: Zbuduj APK aktualizacyjne
+        run: gradle --no-daemon --project-dir project :app:assembleRelease
+      - name: Zweryfikuj podpis APK
+        shell: bash
+        run: "$ANDROID_HOME/build-tools/35.0.0/apksigner verify --verbose --print-certs project/app/build/outputs/apk/release/app-release.apk"
+      - name: Udostępnij APK aktualizacyjne
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kalendarz-Rodzinny-APK-AKTUALIZACJA
+          path: project/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
